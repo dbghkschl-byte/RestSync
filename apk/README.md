@@ -33,4 +33,4 @@
 
 - 파일명: `SYNCLAB_RestSync_release.apk`
 - 저장소 경로: `apk/SYNCLAB_RestSync_release.apk`
-- 다운로드: [Release APK](apk/SYNCLAB_RestSync_release.apk)
+- 다운로드: [Release APK](SYNCLAB_RestSync_release.apk)
