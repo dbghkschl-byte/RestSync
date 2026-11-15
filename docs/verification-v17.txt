@@ -1,0 +1,16 @@
+v17 verification — 2026-11-15
+
+Source and release APK: 0.17.0 / versionCode 17; package com.restsync.demo.
+Android Studio Gradle Sync: completed with published SDK artifacts.
+Complete Kotlin compilation and Android Studio debug APK build: passed.
+JVM integration tests: OK (7 tests).
+Tests cover parking signals, arrival coordinate validity, Gleo parameter encodings,
+callback data as a JSON-array string, spoken commands, and 35 -> 15 minute congestion effect.
+Android Studio signed release APK build: completed successfully.
+APK signature verification: passed; identical signer certificate to the previous v16.
+Android debuggable flag: absent. Embedded App Schema: 0.3, six actions.
+SHA-256: 4efcfdca77f23d8152791e62672120d3d9afb1f62fd9aa286a6e3a3c2c63254a
+
+Not verified: separate installation/runtime of this release, real Gleo utterances,
+vehicle microphone STT/TTS, and FusedLocation/AAOS signal behavior on the emulator.
+The earlier full navigation/timer click walkthrough was on the v16 development build.

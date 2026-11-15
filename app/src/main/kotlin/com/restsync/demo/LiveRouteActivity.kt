@@ -311,6 +311,11 @@ internal class LiveRouteActivity : Activity(), NaviHelperEventListener {
             statusMessage="Pleos 경유지 확인 완료 · 도착 후 정차를 확인해 주세요."))
         if(RecordingTour.read(this).active)RecordingTour.onWaypointConfirmed(this)
         RestAlerts.showCompanionShortcut(this)
+        if (intent.getStringExtra("gleoAction") == "SELECT_REST_STOP") {
+            GleoBridge.send(this, "SELECT_REST_STOP", "success", "The selected waypoint was verified in Pleos navigation.",
+                JSONArray().put(JSONObject().put("stopName", SessionStore(this).read().stopName)))
+            intent.removeExtra("gleoAction")
+        }
         setResult(Activity.RESULT_OK,android.content.Intent().apply {
             putExtra("stopName",stop.area.name);putExtra("stopLat",stop.area.coordinate.latitude)
             putExtra("stopLon",stop.area.coordinate.longitude);putExtra("approachMinutes",stop.approachMinutes)
@@ -458,6 +463,10 @@ internal class LiveRouteActivity : Activity(), NaviHelperEventListener {
     }
 
     private fun finishRequest(message: String) {
+        intent.getStringExtra("gleoAction")?.takeIf { it in GleoBridge.actions }?.let { action ->
+            GleoBridge.send(this, action, "fail", "The requested navigation operation did not complete. Check the RestSync screen and try again.")
+            intent.removeExtra("gleoAction")
+        }
         handler.removeCallbacks(timeout)
         handler.removeCallbacks(selectionPoll)
         pendingStop = null
@@ -477,6 +486,11 @@ internal class LiveRouteActivity : Activity(), NaviHelperEventListener {
 
     /** Non-secret route candidate cache, valid only for a short live-search window. */
     private fun saveCachedCandidates(candidates: List<LiveStop>, end: Coordinate) {
+        val sessionStore = SessionStore(this)
+        val current = sessionStore.read()
+        sessionStore.write(current.copy(stage="SUGGESTIONS", source="PLEOS",
+            destinationName=destination?.name ?: current.destinationName,
+            destinationLat=end.latitude, destinationLon=end.longitude))
         val items=JSONArray()
         candidates.take(3).forEach { stop ->
             items.put(JSONObject().apply {
@@ -484,6 +498,10 @@ internal class LiveRouteActivity : Activity(), NaviHelperEventListener {
                 put("lat",stop.area.coordinate.latitude); put("lon",stop.area.coordinate.longitude)
                 put("approach",stop.approachMinutes);put("drive",stop.driveMinutes)
             })
+        }
+        if (intent.getStringExtra("gleoAction") == "FIND_REST_STOP") {
+            GleoBridge.send(this, "FIND_REST_STOP", "success", "RestSync found rest stops on the active route. Ask to select a stop number.", items)
+            intent.removeExtra("gleoAction")
         }
         getSharedPreferences("restsync_route_candidates",MODE_PRIVATE).edit()
             .putString("items",items.toString())

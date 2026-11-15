@@ -1,0 +1,12 @@
+/.gradle/
+/.idea/
+/.kotlin/
+/.restsync-backups/
+**/build/
+**/release/
+local.properties
+*.iml
+*.jks
+*.keystore
+keystore.properties
+key.properties

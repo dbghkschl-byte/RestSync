@@ -13,8 +13,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.net.Uri
-import android.speech.RecognizerIntent
-import android.speech.tts.TextToSpeech
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
@@ -38,15 +36,28 @@ import kotlin.math.min
 
 /**
  * RestSync: phone-style responsive screens + Pleos landscape vehicle dashboard.
- * Demo voice is an explicit simulation. Real Gleo requires App Schema approval.
+ * Demo voice is an explicit simulation. Gleo uses the published App Schema/Callback contract; no competition approval gate.
  * Vehicle P gear and HVAC controls are NOT simulated as real vehicle operations.
  */
-open class MainActivity : Activity(), TextToSpeech.OnInitListener {
+open class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private val store by lazy { SessionStore(this) }
     private lateinit var session: RestSession
-    private var speech: TextToSpeech? = null
-    private var ttsReady = false
+    private val speech by lazy { PleosVoice(this) }
+    private var recognition: PleosRecognition? = null
+    private var recognitionDialog: android.app.Dialog? = null
+    private var parking: VehicleParking? = null
+    private val parkingWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var parkingRequest = 0
+    private var pendingGleoStart = false
+    private val arrival by lazy { ArrivalAssist(this) {
+        if (!isFinishing && !isDestroyed && store.read().stage == "WAYPOINT") {
+            AlertDialog.Builder(this).setTitle("휴게소 근처예요")
+                .setMessage("위치 정보상 선택한 휴게소 근처입니다. 실제 도착과 안전한 정차·P단을 직접 확인해 주세요.")
+                .setNegativeButton("아직 이동 중", null)
+                .setPositiveButton("도착 확인") { _, _ -> chooseArrivalRest() }.show()
+        }
+    } }
     private var lastSpokenAlert = -1L
     private var countLabel: TextView? = null
     private var countRing: RestCountdownRing? = null
@@ -117,13 +128,12 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
             store.write(session)
         }
         RestAlerts.ensureChannel(this)
-        speech = TextToSpeech(this, this)
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED &&
             (this is FullScreenActivity || !FlowPolicy.wide(session.stage))) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 411)
         }
-        handleGleoIntent(intent)
         if(ensureWindow()) return
+        handleGleoIntent(intent)
         render()
         handler.post { consumeCompanionAction(intent) }
         handler.post {consumeRecordingAction(intent)}
@@ -133,22 +143,25 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onNewIntent(intent)
         setIntent(intent)
         session = store.read()
-        handleGleoIntent(intent)
         if(ensureWindow()) return
+        handleGleoIntent(intent)
         render()
         handler.post { consumeCompanionAction(intent) }
         handler.post {consumeRecordingAction(intent)}
-    }
-
-    override fun onInit(status: Int) {
-        ttsReady = status == TextToSpeech.SUCCESS
-        if (ttsReady) speech?.language = Locale.KOREAN
     }
 
     override fun onResume() {
         super.onResume()
         if(isFinishing) return
         session = store.read()
+        runCatching { if (parking == null) parking = VehicleParking(this); parking?.start() }
+        refreshArrivalAssist()
+        if (session.stage == "WAYPOINT" && session.source == "PLEOS" &&
+            checkSelfPermission("pleos.car.permission.FUSED_LOCATION") != PackageManager.PERMISSION_GRANTED &&
+            !getPreferences(MODE_PRIVATE).getBoolean("arrivalPermissionRequested", false)) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("arrivalPermissionRequested", true).apply()
+            requestPermissions(arrayOf("pleos.car.permission.FUSED_LOCATION"), 413)
+        }
         if(navigateAfterResume) {
             navigateAfterResume=false
             handler.post { if(!isDestroyed) {openPleosNavigatorNotice();if(this is FullScreenActivity)finish()} }
@@ -169,13 +182,18 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         outState.putBoolean("navigateAfterResume", navigateAfterResume)
         super.onSaveInstanceState(outState)
     }
-    override fun onPause() { screenLauncher.onPause(); handler.removeCallbacks(ticker); super.onPause() }
-    override fun onDestroy() { handler.removeCallbacksAndMessages(null); speech?.shutdown(); alarmTone?.release(); screenLauncher.release(); super.onDestroy() }
+    override fun onPause() {
+        screenLauncher.onPause(); handler.removeCallbacks(ticker)
+        recognition?.close(); recognition = null; recognitionDialog?.dismiss(); recognitionDialog = null
+        arrival.stop(); parking?.close(); parking = null; parkingRequest++
+        super.onPause()
+    }
+    override fun onDestroy() { handler.removeCallbacksAndMessages(null); speech.close(); recognition?.close(); arrival.close(); parking?.close(); parkingWorker.shutdownNow(); alarmTone?.release(); screenLauncher.release(); super.onDestroy() }
     @Suppress("DEPRECATION")
     override fun onBackPressed() { navigateBack() }
 
     private fun say(message: String) {
-        if (ttsReady) speech?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "restsync_response")
+        speech.speak(message)
     }
 
     private fun voiceReply(message: String) {
@@ -186,7 +204,15 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
     private fun update(next: RestSession) {
         session = next
         store.write(next)
+        refreshArrivalAssist()
         if(!ensureWindow()) render()
+    }
+
+    private fun refreshArrivalAssist() {
+        if (session.stage == "WAYPOINT" && session.source == "PLEOS" &&
+            checkSelfPermission("pleos.car.permission.FUSED_LOCATION") == PackageManager.PERMISSION_GRANTED) {
+            arrival.start(session.stopLat, session.stopLon)
+        } else arrival.stop()
     }
 
     private fun ensureWindow():Boolean {
@@ -409,7 +435,7 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         metrics.addView(breakM, LinearLayout.LayoutParams(0, -2, 1f))
         left.addView(metrics, RestTheme.margins(this, 18))
         left.addView(RestTheme.button(this, "목적지 검색 · Pleos 경로 시작") { openDestinationSearch() }, RestTheme.margins(this, 13))
-        left.addView(RestTheme.button(this, "✦ Gleo 음성 시연", false) { showDemoVoice() })
+        left.addView(RestTheme.button(this, "✦ 음성 명령 · 문장 체험", false) { showDemoVoice() })
         left.addView(RestTheme.button(this, "시연 경로 사용", false) { demoSearch() }, RestTheme.margins(this, 0, 8))
         content.addView(ScrollView(this).apply { addView(left) }, LinearLayout.LayoutParams(0, -1, 0.53f).apply { rightMargin = dp(16) })
         val hero = FrameLayout(this).apply { background = RestTheme.rounded(this@MainActivity, RestTheme.palePurple, 26); clipToOutline = true }
@@ -573,7 +599,7 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         metrics.addView(rest, LinearLayout.LayoutParams(0, -2, 1f))
         box.addView(metrics, RestTheme.margins(this, 12))
         box.addView(RestTheme.button(this, "목적지 검색 · Pleos 내비 설정") { openDestinationSearch() }, RestTheme.margins(this, 12))
-        box.addView(RestTheme.button(this, "✦  Gleo 음성 시연",false) { showDemoVoice() }, RestTheme.margins(this, 12))
+        box.addView(RestTheme.button(this, "✦  음성 명령 · 문장 체험",false) { showDemoVoice() }, RestTheme.margins(this, 12))
         box.addView(RestTheme.button(this, "시연 시작 · 휴게소 추천", false) { demoSearch() }, RestTheme.margins(this, 12))
         box.addView(RestTheme.button(this, "Pleos 내비 경로에서 실제 검색", false) { launchRoutePicker() }, RestTheme.margins(this, 12))
         box.addView(RestTheme.label(this, "장소 검색으로 Pleos 목적지 설정을 요청합니다. 오른쪽은 OpenStreetMap 미리보기이며 실제 안내 화면이 아닙니다.", 13f, RestTheme.muted))
@@ -700,8 +726,8 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20),dp(16),dp(20),dp(10))
         }
-        content.addView(RestTheme.label(this, "✦  Gleo 음성 시연", 23f, RestTheme.deepPurple, true), RestTheme.margins(this, 7))
-        content.addView(RestTheme.label(this, "실제 Gleo 연결 전, 말하듯 입력하거나 문장을 눌러 전 과정을 시연할 수 있어요.", 13f, RestTheme.muted), RestTheme.margins(this, 14))
+        content.addView(RestTheme.label(this, "✦  음성 명령 · 문장 체험", 23f, RestTheme.deepPurple, true), RestTheme.margins(this, 7))
+        content.addView(RestTheme.label(this, "마이크는 공식 Pleos STT의 기기 내 인식을 사용해요. 아래 문장 버튼은 기능 체험용이며 Gleo 대화를 재현하지 않아요.", 13f, RestTheme.muted), RestTheme.margins(this, 14))
         val input = EditText(this).apply {
             hint = "예: 글레오, 나 좀 쉬고 싶어"
             setSingleLine(true)
@@ -714,7 +740,7 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val voiceScroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         voiceScroll.addView(content)
         val dialog = AlertDialog.Builder(this).setView(voiceScroll).setNegativeButton("닫기", null).create()
-        content.addView(RestTheme.button(this, "마이크로 말하기 · 지원되는 기기", false) {
+        content.addView(RestTheme.button(this, "마이크로 말하기 · Pleos STT", false) {
             dialog.dismiss(); startDemoSpeechRecognition()
         }, RestTheme.margins(this, 9))
         content.addView(RestTheme.button(this, "문장 실행") {
@@ -731,22 +757,36 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun startDemoSpeechRecognition() {
-        val recognizer = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ko-KR")
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "RestSync 시연: 쉬고 싶다고 말해보세요")
-        }
-        try {
-            @Suppress("DEPRECATION")
-            startActivityForResult(recognizer, 44)
-        } catch (_: ActivityNotFoundException) {
-            AlertDialog.Builder(this).setTitle("음성 인식 앱 없음")
-                .setMessage("이 에뮬레이터에서는 Android 음성 인식 서비스가 제공되지 않습니다. Gleo 시연 문장 버튼으로 동일한 흐름을 테스트할 수 있어요.")
-                .setPositiveButton("문장 선택") { _,_ -> showDemoVoice() }.show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "음성 인식을 실행할 수 없어요: ${e.javaClass.simpleName}", Toast.LENGTH_LONG).show()
-            showDemoVoice()
-        }
+        recognition?.close()
+        val message = RestTheme.label(this, "마이크를 준비하고 있어요…", 26f, RestTheme.ink, true)
+        val dialog = RestDialog.create(this, "Pleos 음성 명령", message, "취소")
+        recognitionDialog = dialog
+        dialog.setOnDismissListener { recognition?.close(); recognition = null; recognitionDialog = null }
+        RestDialog.show(this, dialog)
+        speech.stop()
+        recognition = PleosRecognition(this, { message.text = it }, { phrase ->
+            dialog.dismiss()
+            val params = JSONObject()
+            val action = when (val parsed = DemoVoiceParser.parse(phrase)) {
+                DemoVoiceIntent.Search -> {
+                    DemoVoiceParser.requestedMinutes(phrase)?.let { params.put("restMinutes", it) }
+                    DemoVoiceParser.arrivalHourMinute(phrase)?.let { params.put("arrivalTime", "%02d:%02d".format(it.first, it.second)) }
+                    "FIND_REST_STOP"
+                }
+                is DemoVoiceIntent.Select -> { params.put("stopNumber", parsed.index + 1); "SELECT_REST_STOP" }
+                DemoVoiceIntent.Start -> {
+                    DemoVoiceParser.requestedMinutes(phrase)?.let { params.put("restMinutes", it) }
+                    "START_REST"
+                }
+                DemoVoiceIntent.Extend -> { params.put("minutes", DemoVoiceParser.requestedMinutes(phrase) ?: 5); "EXTEND_REST" }
+                DemoVoiceIntent.Stop -> "END_REST"
+                DemoVoiceIntent.Status -> "CHECK_REST_TIME"
+                else -> ""
+            }
+            if (action.isEmpty()) voiceReply("휴게소 찾아줘, 휴식 시작, 5분 연장, 남은 휴식 시간처럼 말씀해 주세요.")
+            else executeCommand(action, params)
+        }, { error -> dialog.dismiss(); Toast.makeText(this, error, Toast.LENGTH_LONG).show() })
+        recognition?.start()
     }
 
     private fun processDemoVoice(phrase: String) {
@@ -817,59 +857,122 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
     private fun handleGleoIntent(incoming: Intent?) {
         val action = incoming?.action ?: return
-        if (action !in listOf("FIND_REST_STOP", "SELECT_REST_STOP", "START_REST", "CHECK_REST_TIME")) return
+        if (action !in GleoBridge.actions) return
+        incoming.action = null
         val raw = incoming.getStringExtra("ACTION_PARAM") ?: "{}"
-        val params = runCatching {
-            val obj = JSONObject(raw)
-            obj.optJSONObject("actionParameters") ?: obj
-        }.getOrElse { JSONObject() }
+        val params = runCatching { GleoBridge.parameters(raw) }.getOrElse {
+            GleoBridge.send(this, action, "fail", "The action parameters are not valid JSON.")
+            return
+        }
+        executeCommand(action, params, true)
+    }
+
+    private fun executeCommand(action: String, params: JSONObject = JSONObject(), gleo: Boolean = false) {
+        fun reply(status: String, english: String, korean: String, data: JSONArray = JSONArray()) {
+            if (gleo) GleoBridge.send(this, action, status, english, data) else voiceReply(korean)
+        }
+        session = store.read()
         when (action) {
             "FIND_REST_STOP" -> {
+                if (session.stage in setOf("RESTING", "DEPARTURE")) {
+                    reply("asking", "Finish the active break before searching for another rest stop.", "현재 휴식을 마친 뒤 다시 찾아 주세요."); return
+                }
                 val minutes = params.optLong("restMinutes", 0L)
                 if (minutes in 1..180) session = session.copy(requestedMinutes = minutes)
                 val h = params.optString("arrivalTime")
-                val t = Regex("^(\\d{1,2}):(\\d{2})$").matchEntire(h)
-                if (t != null) {
-                    val hour = t.groupValues[1].toIntOrNull() ?: -1
-                    val min = t.groupValues[2].toIntOrNull() ?: -1
-                    if (hour in 0..23 && min in 0..59) {
-                        val time = Calendar.getInstance().apply {
-                            set(Calendar.HOUR_OF_DAY,hour); set(Calendar.MINUTE,min)
-                            set(Calendar.SECOND,0);set(Calendar.MILLISECOND,0)
-                            if (timeInMillis < System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR,1)
-                        }.timeInMillis
-                        session = session.copy(deadlineMs = time)
+                val parts = h.split(":")
+                val hour = parts.getOrNull(0)?.toIntOrNull()
+                val minute = parts.getOrNull(1)?.toIntOrNull()
+                if (parts.size == 2 && hour != null && minute != null && hour in 0..23 && minute in 0..59) {
+                    val cal = Calendar.getInstance().apply {
+                        set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, minute); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+                        if (timeInMillis < System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
                     }
+                    session = session.copy(deadlineMs = cal.timeInMillis)
                 }
                 store.write(session)
-                handler.post { if (!isFinishing) launchRoutePicker() }
-                respondGleo(action, "success", "RestSync opened the real navigation rest-stop search. Select a confirmed route stop.")
+                handler.post { if (!isFinishing) {
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(Intent(this, LiveRouteActivity::class.java)
+                        .putExtra("deadlineMs", session.deadlineMs).putExtra("requested", session.requestedMinutes)
+                        .putExtra("gleoAction", if (gleo) action else ""), 33)
+                } }
+                reply("asking", "RestSync is searching the active navigation route. Results will follow.", "실제 내비 경로에서 휴게소를 찾을게요.")
             }
             "SELECT_REST_STOP" -> {
-                // Real route candidates must be verified by NaviHelper, not inferred from demo indices.
-                handler.post { if (!isFinishing) launchRoutePicker() }
-                respondGleo(action, "asking", "Please confirm a real rest stop from the route search screen before adding it.")
+                if (session.stage in setOf("RESTING", "DEPARTURE")) {
+                    reply("asking", "Finish the active break first.", "현재 휴식을 먼저 마쳐 주세요."); return
+                }
+                val index = params.optInt("stopNumber", 0) - 1
+                if (!cachedCandidateAvailable(index)) {
+                    reply("asking", "Search for rest stops again; the requested result is missing or expired.", "검색 결과가 없거나 만료됐어요. 휴게소를 다시 찾아 주세요."); return
+                }
+                handler.post { if (!isFinishing) openCachedCandidate(index, gleo) }
+                reply("asking", "Please confirm the selected real rest stop before updating navigation.", "선택한 휴게소를 경유지로 추가할지 확인해 주세요.")
             }
             "START_REST" -> {
-                if (session.stage == "WAYPOINT") {
-                    handler.post { if (!isFinishing) confirmParked() }
-                    respondGleo(action, "asking", "Confirm the vehicle is parked safely before starting the break.")
-                } else respondGleo(action, "asking", "Choose a rest stop before starting a break.")
+                if (session.stage != "WAYPOINT") {
+                    reply("asking", "Choose and arrive at a rest stop before starting a break.", "휴게소를 선택하고 도착한 뒤 시작해 주세요."); return
+                }
+                val minutes = params.optLong("restMinutes", session.requestedMinutes)
+                if (minutes !in 1..180) { reply("fail", "Break duration must be 1 to 180 minutes.", "휴식 시간은 1분부터 180분까지 선택해 주세요."); return }
+                session = session.copy(requestedMinutes = minutes); store.write(session)
+                pendingGleoStart = gleo
+                handler.post { if (!isFinishing) confirmParked() }
+                reply("asking", "Confirm arrival and safe parking before the break starts.", "실제 도착과 안전한 정차를 확인해 주세요.")
             }
-            "CHECK_REST_TIME" -> respondGleo(action, "success", "RestSync shows the current departure limit and remaining rest time.")
+            "CHECK_REST_TIME" -> {
+                val now = System.currentTimeMillis()
+                val d = RestLogic.calculate(session, now)
+                val remaining = if (session.stage == "RESTING") ((d.nextAlertMs - now).coerceAtLeast(0) + 59_999) / 60_000 else 0
+                val data = JSONArray().put(JSONObject().apply {
+                    put("stage", session.stage); put("remainingMinutes", remaining)
+                    put("requestedMinutes", session.requestedMinutes)
+                    put("departureLimit", time(d.departureLimitMs)); put("destination", session.destinationName)
+                    put("estimatedArrival", time(d.predictedArrivalMs))
+                })
+                reply("success", "The break has $remaining minutes remaining; the current stage is "+session.stage+".", "남은 휴식은 약 "+remaining+"분이에요.", data)
+            }
+            "EXTEND_REST" -> {
+                val minutes = params.optLong("minutes", 5)
+                if (session.stage != "RESTING" || minutes !in 1..60) {
+                    reply("asking", "An active break and an extension of 1 to 60 minutes are required.", "휴식 중에 1분부터 60분까지 연장할 수 있어요."); return
+                }
+                val extended = session.copy(requestedMinutes = (session.requestedMinutes + minutes).coerceAtMost(180))
+                val now = System.currentTimeMillis()
+                val before = RestLogic.calculate(session, now)
+                val after = RestLogic.calculate(extended, now)
+                if (after.nextAlertMs <= before.nextAlertMs) {
+                    reply("asking", "The arrival deadline prevents any later departure. The break was not extended.", "도착 목표 때문에 더 늦게 출발할 수 없어요. 휴식 시간은 유지할게요."); return
+                }
+                update(extended); RestAlerts.schedule(this, session)
+                reply("success", "The requested break was extended, subject to the arrival deadline.", "휴식을 연장했어요. 도착 목표에 맞춰 출발 알림을 드릴게요.",
+                    JSONArray().put(JSONObject().put("requestedMinutes", session.requestedMinutes).put("alertAt", time(after.nextAlertMs))))
+            }
+            "END_REST" -> {
+                if (session.stage !in setOf("RESTING", "DEPARTURE")) {
+                    reply("asking", "No active break can be ended.", "현재 진행 중인 휴식이 없어요."); return
+                }
+                handler.post { if (!isFinishing) {
+                    AlertDialog.Builder(this).setTitle("휴식을 마칠까요?")
+                        .setMessage("완료 화면을 확인한 뒤 안전하게 출발을 준비하세요.")
+                        .setNegativeButton("계속 쉬기") { _, _ -> if (gleo) GleoBridge.send(this, action, "fail", "The driver kept the break active.") }
+                        .setPositiveButton("휴식 마치기") { _, _ ->
+                            if (store.read().stage == "DEPARTURE") acknowledgeDeparture() else finishRest()
+                            if (gleo) GleoBridge.send(this, action, "success", "The driver confirmed the end of the break.")
+                        }.show()
+                } }
+                reply("asking", "Please confirm that the break should end.", "휴식을 마칠지 확인해 주세요.")
+            }
         }
     }
 
-    private fun respondGleo(name: String, status: String, message: String) {
-        val response = JSONObject().apply {
-            put("functionName", name); put("status", status)
-            put("message", message); put("data", JSONArray())
-        }
-        sendBroadcast(Intent("ai.pleos.playground.intent.action.APP_ACTION_RESPONSE").apply {
-            putExtra("result", status)
-            putExtra("packageName", packageName)
-            putExtra("response", response.toString())
-        })
+    private fun cachedCandidateAvailable(index: Int): Boolean {
+        val pref = getSharedPreferences("restsync_route_candidates", MODE_PRIVATE)
+        if (session.source != "PLEOS" || System.currentTimeMillis() - pref.getLong("savedAtMs", 0) !in 0..300_000 ||
+            pref.getString("target", "") != "${session.destinationLat},${session.destinationLon}") return false
+        val data = runCatching { JSONArray(pref.getString("items", "[]")) }.getOrDefault(JSONArray())
+        return index in 0 until minOf(3, data.length())
     }
 
     @Suppress("DEPRECATION")
@@ -881,10 +984,6 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
             voiceReply("목적지를 연결했어요. 내비 안내를 시작합니다.")
             navigateAfterResume=true
             return
-        }
-        if (requestCode == 44 && resultCode == RESULT_OK) {
-            val heard = data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull().orEmpty()
-            if (heard.isNotBlank()) processDemoVoice(heard)
         }
         if(requestCode==811 && resultCode==RESULT_OK && data!=null) {
             update(session.copy(
@@ -1019,7 +1118,11 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
             action("5분 연장") {extendRest()}
             action("휴식 종료 · 알림과 음성",true) {finishRest()}
         }
-        action("음성 대화 시연") {showDemoVoice()}
+        action("음성 명령 · 마이크와 문장 체험") {showDemoVoice()}
+        action("위치·차량 신호 권한 설정") {
+            runCatching { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
+                .onFailure { Toast.makeText(this,"차량 앱 설정에서 RestSync 권한을 확인해 주세요.",Toast.LENGTH_LONG).show() }
+        }
         if (session.stage in setOf("NAVIGATING", "WAYPOINT", "SUGGESTIONS")) {
             action("내비로 복귀 · RestSync 알림 표시") { openPleosNavigatorNotice() }
         }
@@ -1034,12 +1137,13 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     /** Opened ONLY by an explicit tap on the small companion card / its notification. */
-    private fun openCachedCandidate(position:Int) {
+    private fun openCachedCandidate(position:Int, gleo: Boolean = false) {
         if (position !in 0..2) return
         val call=Intent(this,LiveRouteActivity::class.java)
             .putExtra("deadlineMs",session.deadlineMs)
             .putExtra("requested",session.requestedMinutes)
             .putExtra("candidateIndex",position)
+            .putExtra("gleoAction", if (gleo) "SELECT_REST_STOP" else "")
         @Suppress("DEPRECATION")
         startActivityForResult(call,33)
     }
@@ -1207,13 +1311,66 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
     }
 
     private fun confirmParked() {
+        val needed = arrayOf("android.car.permission.CAR_SPEED", "pleos.car.permission.FUSED_LOCATION")
+            .filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (needed.isNotEmpty() && !getPreferences(MODE_PRIVATE).getBoolean("vehiclePermissionsRequested", false)) {
+            getPreferences(MODE_PRIVATE).edit().putBoolean("vehiclePermissionsRequested", true).apply()
+            requestPermissions(needed.toTypedArray(), 412)
+            return
+        }
+        inspectParking { state ->
+            if (state == ParkingPolicy.State.UNSAFE) {
+                pendingGleoStart = false
+                AlertDialog.Builder(this).setTitle("정차·P단 확인 필요")
+                    .setMessage("차량 신호에서 이동 중이거나 P단이 아닌 것으로 확인됐어요. 안전하게 정차한 뒤 다시 눌러 주세요.")
+                    .setPositiveButton("확인", null).show()
+                GleoBridge.send(this, "START_REST", "fail", "The vehicle signals do not confirm safe parking.")
+                return@inspectParking
+            }
+            showParkingConfirmation(state)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 413) refreshArrivalAssist()
+        if (requestCode == 412) {
+            parking?.close(); parking = VehicleParking(this).also { it.start() }
+            refreshArrivalAssist()
+            handler.postDelayed({ if (!isFinishing && !isDestroyed) confirmParked() }, 400)
+        }
+    }
+
+    private fun inspectParking(done: (ParkingPolicy.State) -> Unit) {
+        val request = ++parkingRequest
+        var delivered = false
+        fun deliver(state: ParkingPolicy.State) {
+            if (!delivered && request == parkingRequest && !isFinishing && !isDestroyed) { delivered = true; done(state) }
+        }
+        handler.postDelayed({ deliver(ParkingPolicy.State.UNKNOWN) }, 2500)
+        parkingWorker.execute {
+            val state = runCatching { parking?.check() ?: ParkingPolicy.State.UNKNOWN }.getOrDefault(ParkingPolicy.State.UNKNOWN)
+            handler.post { deliver(state) }
+        }
+    }
+
+    private fun showParkingConfirmation(state: ParkingPolicy.State) {
         AlertDialog.Builder(this).setTitle("안전 정차 확인")
-            .setMessage("차량을 안전한 장소에 완전히 정차하고 P단으로 변속했나요? RestSync는 P단을 자동 판별하지 않습니다.\n\n선택한 휴식: ${session.requestedMinutes}분. 도착 목표에 이미 여유가 없다면 선택한 휴식 시간을 기준으로 알려드려요.")
-            .setNegativeButton("취소",null)
-            .setPositiveButton("정차·P단 확인 · 휴식 시작") {_,_-> startRest() }.show()
+            .setMessage("차량을 안전한 장소에 완전히 정차하고 P단으로 변속했나요? ${if (state == ParkingPolicy.State.PARKED) "차량 신호에서 정차·P단을 확인했어요. 주변 안전도 직접 확인해 주세요." else "차량 신호를 확인할 수 없어 자동 판별하지 못했어요. 실제 정차·P단을 직접 확인해 주세요."}\n\n선택한 휴식: ${session.requestedMinutes}분. 도착 목표에 이미 여유가 없다면 선택한 휴식 시간을 기준으로 알려드려요.")
+            .setNegativeButton("취소") { _, _ -> pendingGleoStart = false }
+            .setPositiveButton("정차·P단 확인 · 휴식 시작") {_,_-> startRest() }.setOnCancelListener { pendingGleoStart = false }.show()
     }
 
     private fun startRest() {
+        inspectParking { state ->
+            if (state == ParkingPolicy.State.UNSAFE) {
+                pendingGleoStart = false
+                Toast.makeText(this, "이동 중이거나 P단이 아니어서 휴식을 시작할 수 없어요.", Toast.LENGTH_LONG).show()
+            } else beginConfirmedRest()
+        }
+    }
+
+    private fun beginConfirmedRest() {
         val recording=RecordingTour.read(this).active
         if(recording && session.source!="PLEOS") {
             Toast.makeText(this,"실제 Pleos 경유지 등록을 확인한 뒤 휴식을 시작해 주세요.",Toast.LENGTH_LONG).show();return
@@ -1225,6 +1382,7 @@ open class MainActivity : Activity(), TextToSpeech.OnInitListener {
         val now=System.currentTimeMillis()
         val started=FlowPolicy.beginRest(session,session.requestedMinutes,now)
         update(if(recording && started.source=="PLEOS")RealRecordingPolicy.prepareRest(started,now) else started)
+        if (pendingGleoStart) { pendingGleoStart = false; GleoBridge.send(this, "START_REST", "success", "The driver confirmed arrival and parking. The break has started.") }
         if(recording)RecordingTour.onRestStarted(this)
         RestAlerts.schedule(this, session)
         runCatching {

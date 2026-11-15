@@ -8,6 +8,11 @@
     <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
     <uses-permission android:name="pleos.car.permission.NAVI_CUSTOM_MAP" />
 
+    <uses-permission android:name="pleos.car.permission.STT_SERVICE" />
+    <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
+    <uses-permission android:name="pleos.car.permission.FUSED_LOCATION" />
+    <uses-permission android:name="android.car.permission.CAR_SPEED" />
+    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
     <application
         android:name=".RestSyncApplication"
         android:label="RestSync"
@@ -16,6 +21,7 @@
         android:networkSecurityConfig="@xml/restsync_development_network"
         android:resizeableActivity="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <uses-library android:name="android.car" android:required="false" />
         <activity android:name=".CurrentRouteActivity" android:exported="false" />
         <activity android:name=".DestinationSearchActivity" android:exported="false" />
         <activity android:name=".LiveRouteActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize" />
@@ -28,7 +34,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- Gleo Action will work only after App Schema approval/integration. -->
+            <!-- Competition teams can use the documented Gleo App Schema without separate approval. -->
             <intent-filter>
                 <action android:name="FIND_REST_STOP" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -39,6 +45,18 @@
             </intent-filter>
             <intent-filter>
                 <action android:name="START_REST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="CHECK_REST_TIME" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="EXTEND_REST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="END_REST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

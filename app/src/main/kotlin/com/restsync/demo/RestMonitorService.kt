@@ -5,7 +5,6 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
-import android.speech.tts.TextToSpeech
 import java.util.Locale
 import ai.pleos.playground.navi.constants.NaviErrorCode
 import ai.pleos.playground.navi.data.DestinationInfo
@@ -17,12 +16,11 @@ import ai.pleos.playground.navi.helper.listener.NaviHelperEventListener
  * Re-queries Pleos every 90s when available. If unavailable, DEMO retains the
  * last manually entered ETA and labels it as simulated. No real vehicle control.
  */
-class RestMonitorService : Service(), NaviHelperEventListener, TextToSpeech.OnInitListener {
+class RestMonitorService : Service(), NaviHelperEventListener {
     private val handler = Handler(Looper.getMainLooper())
     private val store by lazy { SessionStore(this) }
     private var helper: NaviHelper? = null
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
+    private var tts: PleosVoice? = null
     private var pendingSpeech: String? = null
     private var tone:android.media.ToneGenerator?=null
     private var connected = false
@@ -61,7 +59,7 @@ class RestMonitorService : Service(), NaviHelperEventListener, TextToSpeech.OnIn
     override fun onCreate() {
         super.onCreate()
         RestAlerts.ensureChannel(this)
-        tts = TextToSpeech(this, this)
+        tts = PleosVoice(this)
         startForeground(RestAlerts.MONITOR_ID, RestAlerts.monitorNotification(this, "휴식 중 · 예상 도착시간을 확인하고 있어요"))
         connectNavi()
         handler.post(periodic)
@@ -148,16 +146,7 @@ class RestMonitorService : Service(), NaviHelperEventListener, TextToSpeech.OnIn
     }
 
     private fun speak(message: String) {
-        if (!ttsReady) {pendingSpeech=message;return}
-        runCatching {tts?.speak(message, TextToSpeech.QUEUE_FLUSH, null, "restsync_auto_depart")}
-    }
-
-    override fun onInit(status: Int) {
-        ttsReady=status==TextToSpeech.SUCCESS
-        if (ttsReady) {
-            tts?.language=Locale.KOREAN
-            pendingSpeech?.let {text->pendingSpeech=null;speak(text)}
-        }
+        runCatching {tts?.speak(message)}
     }
 
     override fun onError(errorCode: NaviErrorCode) {
@@ -173,7 +162,7 @@ class RestMonitorService : Service(), NaviHelperEventListener, TextToSpeech.OnIn
         }
         helper = null
         tts?.stop()
-        tts?.shutdown()
+        tts?.close()
         tone?.release();tone=null
         tts=null
         super.onDestroy()

@@ -9,7 +9,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -20,7 +19,7 @@ import java.util.Date
 import java.util.Locale
 
 /** Recording-only local playback; it never writes SessionStore or calls NaviHelper. */
-class DemoPlaybackActivity : Activity(), TextToSpeech.OnInitListener {
+class DemoPlaybackActivity : Activity() {
     private val handler=Handler(Looper.getMainLooper())
     private var positionMs=0L
     private var anchorMs=0L
@@ -28,8 +27,7 @@ class DemoPlaybackActivity : Activity(), TextToSpeech.OnInitListener {
     private var playing=true
     private var foreground=false
     private var audio=true
-    private var tts:TextToSpeech?=null
-    private var ttsReady=false
+    private var tts: PleosVoice? = null
     private var pendingSpeech:String?=null
     private var tone:ToneGenerator?=null
     private lateinit var scene:DemoPlayback.Snapshot
@@ -64,7 +62,7 @@ class DemoPlaybackActivity : Activity(), TextToSpeech.OnInitListener {
         window.statusBarColor=RestTheme.snow
         scene=DemoPlayback.snapshot(positionMs,baseTimeMs)
         buildLayout()
-        tts=TextToSpeech(this,this)
+        tts=PleosVoice(this)
     }
     private fun dp(n:Int)=RestTheme.dp(this,n)
     private fun label(text:String,size:Float=24f,bold:Boolean=false)=RestTheme.label(this,text,size,RestTheme.ink,bold)
@@ -275,12 +273,7 @@ class DemoPlaybackActivity : Activity(), TextToSpeech.OnInitListener {
     }
     private fun speak(text:String) {
         if(!audio || !foreground || !playing)return
-        if(!ttsReady) {pendingSpeech=text;return}
-        tts?.speak(text,TextToSpeech.QUEUE_FLUSH,null,"restsync_recording_demo")
-    }
-    override fun onInit(status:Int) {
-        ttsReady=status==TextToSpeech.SUCCESS
-        if(ttsReady) {tts?.language=Locale.KOREAN;pendingSpeech?.let {pendingSpeech=null;speak(it)}}
+        tts?.speak(text)
     }
     override fun onResume() {
         super.onResume();foreground=true;anchorMs=SystemClock.elapsedRealtime()
@@ -299,7 +292,7 @@ class DemoPlaybackActivity : Activity(), TextToSpeech.OnInitListener {
         super.onConfigurationChanged(config);dismissDialog();buildLayout();body.post {updateFrame()}
     }
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null);dismissDialog();tts?.stop();tts?.shutdown();tone?.release()
+        handler.removeCallbacksAndMessages(null);dismissDialog();tts?.stop();tts?.close();tone?.release()
         super.onDestroy()
     }
 }

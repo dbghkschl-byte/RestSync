@@ -2,7 +2,7 @@
   "packageName": "com.restsync.demo",
   "appDescription": "RestSync helps drivers find a rest stop on the active Pleos navigation route, plan breaks before a fixed arrival deadline, and get a timely departure reminder.",
   "invokeWord": "레스트싱크",
-  "version": "0.2",
+  "version": "0.3",
   "actionCalls": [
     {
       "type": "function",
@@ -13,8 +13,14 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "restMinutes": {"type": "number", "description": "Desired rest minutes"},
-            "arrivalTime": {"type": "string", "description": "Desired arrival deadline in local HH:mm format"}
+            "restMinutes": {
+              "type": "number",
+              "description": "Desired rest minutes"
+            },
+            "arrivalTime": {
+              "type": "string",
+              "description": "Desired arrival deadline in local HH:mm format"
+            }
           },
           "required": []
         }
@@ -29,7 +35,10 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "stopNumber": {"type": "number", "description": "One-based index of the desired rest stop"}
+            "stopNumber": {
+              "type": "number",
+              "description": "One-based index of the desired rest stop"
+            }
           },
           "required": []
         }
@@ -41,7 +50,60 @@
         "component": "activity",
         "name": "START_REST",
         "description": "Ask RestSync to begin the parked rest session, requiring manual safety and parking confirmation.",
-        "parameters": {"type": "object", "properties": {}, "required": []}
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "restMinutes": {
+              "type": "integer",
+              "description": "Requested break duration in minutes, 1 to 180."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "CHECK_REST_TIME",
+        "description": "Read the actual remaining break time and departure deadline.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "EXTEND_REST",
+        "description": "Extend an active break. The arrival deadline always takes priority.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "minutes": {
+              "type": "integer",
+              "description": "Additional minutes, from 1 to 60. Default 5."
+            }
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "END_REST",
+        "description": "Ask to finish an active break and show its completion screen.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "required": []
+        }
       }
     }
   ]

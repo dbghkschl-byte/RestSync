@@ -35,6 +35,7 @@ internal object DemoVoiceParser {
         if (listOf("교통정체", "정체심", "차가막혀", "차막혀").any { it in s }) return DemoVoiceIntent.Congestion
         if (listOf("교통회복", "정체풀", "길이뚫", "차가안막").any { it in s }) return DemoVoiceIntent.ClearTraffic
         if (listOf("휴식시작", "쉬기시작", "이제쉴게", "잠잘게").any { it in s }) return DemoVoiceIntent.Start
+        if (Regex("\\d{1,3}분(?:쉴게|쉬겠|쉬고갈|휴식할)").containsMatchIn(s)) return DemoVoiceIntent.Start
         if (listOf("첫번째", "1번", "일번", "첫째").any { it in s }) return DemoVoiceIntent.Select(0)
         if (listOf("두번째", "2번", "이번", "둘째").any { it in s }) return DemoVoiceIntent.Select(1)
         if (listOf("세번째", "3번", "삼번", "셋째").any { it in s }) return DemoVoiceIntent.Select(2)
