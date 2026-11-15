@@ -1,0 +1,48 @@
+{
+  "packageName": "com.restsync.demo",
+  "appDescription": "RestSync helps drivers find a rest stop on the active Pleos navigation route, plan breaks before a fixed arrival deadline, and get a timely departure reminder.",
+  "invokeWord": "레스트싱크",
+  "version": "0.2",
+  "actionCalls": [
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "FIND_REST_STOP",
+        "description": "Open RestSync and search for suitable rest stops on the current route when a driver says they are tired, hungry, or want a break.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "restMinutes": {"type": "number", "description": "Desired rest minutes"},
+            "arrivalTime": {"type": "string", "description": "Desired arrival deadline in local HH:mm format"}
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "SELECT_REST_STOP",
+        "description": "Help the driver confirm a rest stop from a route search. Real waypoint insertion requires verified navigation results and user confirmation.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "stopNumber": {"type": "number", "description": "One-based index of the desired rest stop"}
+          },
+          "required": []
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "component": "activity",
+        "name": "START_REST",
+        "description": "Ask RestSync to begin the parked rest session, requiring manual safety and parking confirmation.",
+        "parameters": {"type": "object", "properties": {}, "required": []}
+      }
+    }
+  ]
+}

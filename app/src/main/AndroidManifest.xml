@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE" />
+    <uses-permission android:name="pleos.car.permission.NAVI_ROUTE_SEARCH" />
+    <uses-permission android:name="pleos.car.permission.NAVI_CUSTOM_MAP" />
+
+    <application
+        android:name=".RestSyncApplication"
+        android:label="RestSync"
+        android:icon="@drawable/restsync_mark"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/restsync_development_network"
+        android:resizeableActivity="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".CurrentRouteActivity" android:exported="false" />
+        <activity android:name=".DestinationSearchActivity" android:exported="false" />
+        <activity android:name=".LiveRouteActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize" />
+        <activity android:name=".SearchSettingsActivity" android:exported="false" />
+        <activity android:name=".DemoPlaybackActivity" android:exported="false" android:configChanges="orientation|screenSize|smallestScreenSize" />
+        <activity android:name=".FullScreenActivity" android:exported="false" android:launchMode="singleTop" android:configChanges="orientation|screenSize|smallestScreenSize" />
+        <activity android:name=".NavigationHandoffActivity" android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTop" android:configChanges="orientation|screenSize|smallestScreenSize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Gleo Action will work only after App Schema approval/integration. -->
+            <intent-filter>
+                <action android:name="FIND_REST_STOP" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="SELECT_REST_STOP" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="START_REST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+        <service
+            android:name=".RestMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver android:name=".RestAlertReceiver" android:exported="false" />
+    </application>
+</manifest>
